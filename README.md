@@ -14,7 +14,11 @@ Cut MTTD/MTTR for PVC-related anomalies. Keep a clear audit trail end-to-end.
 ![Architecture](docs/architecture.png)
 
 ## Quick start (local demo with kind)
-Prereqs: Docker, kind, kubectl, helm.
+Prerequisites: Docker, kind, kubectl, helm.
 ```bash
 ./scripts/demo-kind.sh
 kubectl get pods -A
+
+## Cleanup
+```bash
+./scripts/cleanup.sh
