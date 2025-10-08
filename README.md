@@ -24,3 +24,24 @@ kubectl get pods -A
 ```bash
 ./scripts/cleanup.sh
 ```
+
+## Repository layout
+- **docs/ :** report.pdf, diagram
+- **manifests/ :** Kubernetes YAML (bridge, rules)
+- **helm-values/ :** Minimal values for Falco/Sidekick/Talon
+- **scripts/ :** kind bootstrap and teardown
+- **.github/workflows/ :** CI: kubeconform + yamllint + markdownlint
+
+## Key manifests
+- **manifests/am-to-talon-bridge.yaml:** Alertmanager → Talon bridge
+- **manifests/loki-ruler-falco-io.yaml:** alert rule from Falco logs
+- **helm-values/ :** minimal Falco/Sidekick/Talon config
+
+## Results
+See docs/report.pdf and docs/screenshots/ for evidence of alert → action flow.
+
+## Limitations
+No HA for the bridge, minimal RBAC/NetworkPolicies, demo settings only.
+
+## License
+This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
