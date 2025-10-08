@@ -1,15 +1,26 @@
 name: validate
 on: [push, pull_request]
+
 jobs:
   kubeconform:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: docker://ghcr.io/yannh/kubeconform:latest
+      - name: kubeconform
+        uses: docker://ghcr.io/yannh/kubeconform:latest
         with:
-          args: -strict -summary -ignore-missing-schemas manifests/**/*.yaml
+          args: >-
+            -strict -summary
+            -kubernetes-version 1.28.0
+            -schema-location default
+            -ignore-missing-schemas
+            manifests
+
   yamllint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ibiqlik/action-yamllint@v3
+      - name: yamllint
+        uses: ibiqlik/action-yamllint@v3
+        with:
+          config_file: .yamllint
