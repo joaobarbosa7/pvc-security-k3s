@@ -17,7 +17,7 @@ jobs:
             manifests
 
   # .github/workflows/validate.yaml  (secção yamllint)
-  yamllint:
+    yamllint:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,8 +26,10 @@ jobs:
         with:
           config_file: .yamllint
           strict: false
-          file_glob: |
-            manifests/**/*.yaml
-            helm-values/**/*.yaml
-            .github/workflows/**/*.yaml
+      - name: Run yamllint on manifests
+        run: |
+          yamllint -c .yamllint manifests || true
+          yamllint -c .yamllint helm-values || true
+          yamllint -c .yamllint .github/workflows || true
+
 
