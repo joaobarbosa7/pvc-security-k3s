@@ -1,5 +1,9 @@
 # Kubernetes PVC Security (K3s)
 
+[![Validate](https://github.com/joaobarbosa7/pvc-security-k3s/actions/workflows/validate.yaml/badge.svg)](../../actions/workflows/validate.yaml)
+[![Markdown](https://github.com/joaobarbosa7/pvc-security-k3s/actions/workflows/markdown.yaml/badge.svg)](../../actions/workflows/markdown.yaml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
 Falco · Loki · Prometheus · Talon
 
 Detect, correlate, and respond to suspicious PVC I/O in Kubernetes.  
