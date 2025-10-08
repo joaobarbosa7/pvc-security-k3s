@@ -17,8 +17,10 @@ Cut MTTD/MTTR for PVC-related anomalies. Keep a clear audit trail end-to-end.
 Prerequisites: Docker, kind, kubectl, helm.
 ```bash
 ./scripts/demo-kind.sh
-kubectl get pods -A
+kubectl get pods -A 
+```
 
 ## Cleanup
 ```bash
 ./scripts/cleanup.sh
+```
