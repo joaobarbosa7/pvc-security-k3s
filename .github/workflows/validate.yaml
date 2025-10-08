@@ -16,6 +16,7 @@ jobs:
             -ignore-missing-schemas
             manifests
 
+  # .github/workflows/validate.yaml  (secção yamllint)
   yamllint:
     runs-on: ubuntu-latest
     steps:
@@ -24,3 +25,9 @@ jobs:
         uses: ibiqlik/action-yamllint@v3
         with:
           config_file: .yamllint
+          strict: false
+          file_glob: |
+            manifests/**/*.yaml
+            helm-values/**/*.yaml
+            .github/workflows/**/*.yaml
+
