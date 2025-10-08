@@ -36,3 +36,4 @@ data:
         annotations:
           summary: "PVC {{ $labels.persistentvolumeclaim }} com alta taxa de IO"
           description: "Pod {{ $labels.k8s_ns_name }}/{{ $labels.k8s_pod_name }} excedeu 3 aberturas em 15m no PVC {{ $labels.persistentvolumeclaim }}."
+          
