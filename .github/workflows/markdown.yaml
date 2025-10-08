@@ -1,3 +1,4 @@
+# .github/workflows/markdown.yaml
 name: markdown
 on: [push, pull_request]
 jobs:
@@ -5,8 +6,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run Markdownlint
-        uses: avto-dev/markdown-lint@v1
+      - name: markdownlint-cli2
+        uses: DavidAnson/markdownlint-cli2-action@v18
         with:
-          config: .markdownlint.json
-          args: '**/*.md'
+          globs: |
+            **/*.md
