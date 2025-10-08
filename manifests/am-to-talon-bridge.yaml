@@ -1,0 +1,317 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: am-to-talon-bridge
+  namespace: observability
+data:
+  app.py: |
+    import os, json, datetime, time, re
+    import requests
+    from flask import Flask, request, jsonify
+
+    # --- K8s client (para resolver pod por PVC/família) ---
+    try:
+      from kubernetes import client as k8s_client, config as k8s_config
+    except Exception:
+      k8s_client = None
+      k8s_config = None
+
+    TALON_URL = os.getenv("TALON_URL", "http://falco-talon.falco.svc.cluster.local:2803/alert")
+    RULE_FALLBACK = os.getenv("RULE_FALLBACK", "AlertmanagerEvent")
+    PRIORITY_DEFAULT = os.getenv("PRIORITY_DEFAULT", "Critical")
+
+    LABEL_KEYS_NS  = os.getenv("LABEL_KEYS_NS", "namespace,k8s_ns_name").split(",")
+    LABEL_KEYS_POD = os.getenv("LABEL_KEYS_POD", "pod,k8s_pod_name").split(",")
+    LABEL_KEYS_PVC = os.getenv("LABEL_KEYS_PVC", "persistentvolumeclaim").split(",")
+
+    app = Flask(__name__)
+
+    # ------------ utils ------------
+    def pick(d, keys):
+      for k in keys:
+        if k in d and d[k]:
+          return d[k]
+      return None
+
+    _K8S = None
+    def init_k8s():
+      """Inicializa cliente CoreV1 uma vez (in-cluster)."""
+      global _K8S
+      if _K8S is not None or not (k8s_client and k8s_config):
+        return
+      try:
+        k8s_config.load_incluster_config()
+        _K8S = k8s_client.CoreV1Api()
+        print("K8S client: ready", flush=True)
+      except Exception as e:
+        print(f"K8S client init failed: {e}", flush=True)
+        _K8S = None
+
+    def exists_and_not_terminating(ns, name):
+      if not _K8S or not name or name == "unknown":
+        return False
+      try:
+        p = _K8S.read_namespaced_pod(name=name, namespace=ns)
+        return getattr(p.metadata, "deletion_timestamp", None) is None
+      except Exception:
+        return False
+
+    def wait_ready_current(ns, name, timeout=3.0, interval=0.2):
+      """Espera curto para o pod existir e não estar a terminar (mitiga race)."""
+      deadline = time.time() + timeout
+      while time.time() < deadline:
+        if exists_and_not_terminating(ns, name):
+          return True
+        time.sleep(interval)
+      return False
+
+    def _score_pod(p):
+      """Ordena Running > Pending > outros; depois mais recente."""
+      phase = (p.status.phase or "").lower()
+      pri = 0 if phase == "running" else (1 if phase == "pending" else 2)
+      ts = p.metadata.creation_timestamp or datetime.datetime.min.replace(tzinfo=datetime.timezone.utc)
+      return (pri, -ts.timestamp())
+
+    def resolve_pod_by_pvc(ns, pvc):
+      """Devolve o melhor pod que monta o PVC (Running/Pending e mais recente)."""
+      if not _K8S or not pvc or pvc == "unknown":
+        return None
+      try:
+        pods = _K8S.list_namespaced_pod(namespace=ns).items
+        cands = []
+        for p in pods:
+          for v in (p.spec.volumes or []):
+            if v.persistent_volume_claim and v.persistent_volume_claim.claim_name == pvc:
+              cands.append(p); break
+        if not cands:
+          return None
+        cands.sort(key=_score_pod)
+        return cands[0].metadata.name
+      except Exception as e:
+        print(f"K8S lookup error (pvc): {e}", flush=True)
+        return None
+
+    def resolve_pod_by_family(ns, podname):
+      """Escolhe o pod atual da mesma 'família' (preferindo pod-template-hash)."""
+      if not _K8S or not podname or podname == "unknown":
+        return None
+      try:
+        # tenta extrair o hash do RS no nome: <base>-<rs-hash:10hex>-<suffix>
+        m = re.match(r"^(.+)-([0-9a-f]{10})-[^-]+$", podname)
+        label_selector = f"pod-template-hash={m.group(2)}" if m else None
+
+        pods = (_K8S.list_namespaced_pod(namespace=ns, label_selector=label_selector).items
+                if label_selector else _K8S.list_namespaced_pod(namespace=ns).items)
+
+        if not label_selector:
+          # fallback: prefixo até ao penúltimo '-'
+          parts = podname.rsplit("-", 1)
+          if len(parts) >= 2:
+            prefix = parts[0] + "-"
+            pods = [p for p in pods if p.metadata.name.startswith(prefix)]
+
+        if not pods:
+          return None
+
+        pods.sort(key=_score_pod)
+        return pods[0].metadata.name
+      except Exception as e:
+        print(f"K8S lookup error (family): {e}", flush=True)
+        return None
+
+    # ------------ endpoints ------------
+    @app.route("/healthz")
+    def healthz():
+      return "ok", 200
+
+    @app.route("/alert", methods=["POST"])
+    def alert():
+      try:
+        body = request.get_json(force=True, silent=False)
+      except Exception as e:
+        return jsonify({"error": f"invalid json: {e}"}), 400
+
+      init_k8s()  # prepara cliente k8s
+
+      alerts = body.get("alerts", [])
+      sent = 0
+      errors = []
+      for a in alerts:
+        if a.get("status") != "firing":
+          continue
+        labels = a.get("labels", {}) or {}
+        ann = a.get("annotations", {}) or {}
+
+        ns  = pick(labels, LABEL_KEYS_NS)  or pick(ann, LABEL_KEYS_NS)  or "default"
+        pod = pick(labels, LABEL_KEYS_POD) or pick(ann, LABEL_KEYS_POD) or "unknown"
+        pvc = pick(labels, LABEL_KEYS_PVC) or pick(ann, LABEL_KEYS_PVC) or "unknown"
+
+        # --- resolução do alvo (PVC -> família), garantindo não terminar ---
+        resolved = None
+
+        if pvc and pvc != "unknown":
+          cand = resolve_pod_by_pvc(ns, pvc)
+          if cand and wait_ready_current(ns, cand, timeout=3.0):
+            if cand != pod:
+              print(f"Resolved pod by PVC: {ns}/{pvc} -> {cand} (was {pod})", flush=True)
+            else:
+              print(f"Resolved pod by PVC: {ns}/{pvc} -> {cand}", flush=True)
+            pod, resolved = cand, cand
+
+        if not resolved:
+          cand = resolve_pod_by_family(ns, pod)
+          if cand and wait_ready_current(ns, cand, timeout=3.0):
+            if cand != pod:
+              print(f"Resolved pod by family: {ns}/{pod} -> {cand}", flush=True)
+            else:
+              print(f"Resolved pod by family: {ns}/{pod} -> {cand} (unchanged)", flush=True)
+            pod = cand
+
+        rule = labels.get("alertname") or RULE_FALLBACK
+        sev  = labels.get("severity", PRIORITY_DEFAULT)
+        now  = datetime.datetime.utcnow().isoformat() + "Z"
+
+        payload = {
+          "output": f"{rule} on {ns}/{pod} [PVC={pvc}]",
+          "priority": (sev or "").capitalize() or PRIORITY_DEFAULT,
+          "rule": rule,
+          "time": now,
+          "output_fields": {
+            "k8s.ns.name": ns,
+            "k8s.pod.name": pod,
+            "k8s.persistentvolumeclaim": pvc
+          },
+          "source": "alertmanager"
+        }
+
+        try:
+          r = requests.post(TALON_URL, json=payload, timeout=5)
+          print(f"TALON RESP {r.status_code}: {r.text}", flush=True)
+          if r.status_code >= 300:
+            errors.append(f"Talon {r.status_code}: {r.text}")
+          else:
+            sent += 1
+        except Exception as e:
+          errors.append(str(e))
+
+      status = 200 if sent and not errors else (207 if errors else 202)
+      return jsonify({"forwarded": sent, "errors": errors}), status
+
+    if __name__ == "__main__":
+      app.run(host="0.0.0.0", port=8080)
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: am-to-talon-bridge
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: am-to-talon-bridge-read-pods
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get","list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: am-to-talon-bridge-read-pods
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: am-to-talon-bridge-read-pods
+subjects:
+- kind: ServiceAccount
+  name: am-to-talon-bridge
+  namespace: observability
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: am-to-talon-bridge
+  namespace: observability
+  labels:
+    app: am-to-talon-bridge
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: am-to-talon-bridge
+  template:
+    metadata:
+      labels:
+        app: am-to-talon-bridge
+    spec:
+      serviceAccountName: am-to-talon-bridge
+      containers:
+      - name: bridge
+        image: python:3.11-slim
+        workingDir: /app
+        command: ["/bin/sh","-lc"]
+        args:
+          - |
+            pip install --no-cache-dir flask requests kubernetes && \
+            python app.py
+        env:
+        - name: TALON_URL
+          value: "http://falco-talon.falco.svc.cluster.local:2803/alert"
+        - name: LABEL_KEYS_NS
+          value: "namespace,k8s_ns_name"
+        - name: LABEL_KEYS_POD
+          value: "pod,k8s_pod_name"
+        - name: LABEL_KEYS_PVC
+          value: "persistentvolumeclaim"
+        ports:
+        - name: http
+          containerPort: 8080
+        startupProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          failureThreshold: 24   # ~2min para o pip install
+          periodSeconds: 5
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: http
+          periodSeconds: 10
+          timeoutSeconds: 2
+          failureThreshold: 3
+        volumeMounts:
+        - name: app
+          mountPath: /app
+      volumes:
+      - name: app
+        configMap:
+          name: am-to-talon-bridge
+          items:
+          - key: app.py
+            path: app.py
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: am-to-talon-bridge
+  namespace: observability
+spec:
+  selector:
+    app: am-to-talon-bridge
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http

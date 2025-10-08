@@ -1,0 +1,11 @@
+config:
+  loki:
+    hostport: http://loki.loki.svc.cluster.local:3100
+    endpoint: /loki/api/v1/push
+    tenant: fake             
+    minimumpriority: debug
+    customfields: ["app=falco"]
+
+  webhook:
+    address: http://falco-talon.falco:2803/
+    minimumpriority: debug

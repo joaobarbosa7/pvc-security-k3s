@@ -1,0 +1,45 @@
+falco:
+  json_output: true
+  priority: notice
+
+  # Apenas o plugin "container"
+  load_plugins: [container]
+  plugins:
+    - name: container
+      library_path: libcontainer.so
+
+  # envia eventos para o Falcosidekick
+  http_output:
+    enabled: true
+    url: "http://falcosidekick.falco:2801/"
+    keep_alive: true
+
+  # Webserver pra/ health/metrics
+  webserver:
+    enabled: true
+    listen_port: 8765
+    prometheus_metrics_enabled: true
+
+  # Regras base + diretório de extras
+  rules_files:
+    - /etc/falco/falco_rules.yaml
+    - /etc/falco/rules.d
+
+driver:
+  enabled: true
+  kind: ebpf
+
+customRules:
+  simple-open-for-write.yaml: |-
+    - macro: any_open_for_write
+      condition: (evt.type in (open, openat, openat2) and evt.is_open_write=true and fd.type=file and evt.dir=<)
+
+    - rule: Storage open-for-write
+      desc: "Qualquer abertura de ficheiro para escrita (agregação/alerta no backend)."
+      condition: any_open_for_write and proc.name != falco
+      enabled: true
+      output: >-
+        Storage write open | user=%user.name file=%fd.name proc=%proc.name pid=%proc.pid cmd=%proc.cmdline container=%container.id
+      priority: NOTICE
+      source: syscall
+      tags: [filesystem, storage]
