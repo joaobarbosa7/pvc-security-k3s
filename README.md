@@ -26,21 +26,6 @@ Keep a clear audit trail end-to-end.
 
 ![Architecture](docs/architecture.png)
 
-## Quick start (local demo with kind)
-
-Prerequisites: Docker, kind, kubectl, helm.
-
-```bash
-./scripts/demo-kind.sh
-kubectl get pods -A
-```
-
-## Cleanup
-
-```bash
-./scripts/cleanup.sh
-```
-
 ## Repository layout
 
 - **docs/**: report.pdf, diagram
